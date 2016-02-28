@@ -1,0 +1,220 @@
+---
+title: wearable_prediction.R
+author: "Joel Polanco"
+date: "February 27, 2016"
+output: html_document
+---
+
+#Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+#Data
+The training data for this project are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv]
+The test data are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv]
+
+#Cited Works
+The data for this project come from this source: [http://groupware.les.inf.puc-rio.br/har]. 
+
+#Preliminary Work
+##Reproduceability
+An overall pseudo-random number generator seed was set at 1234 for all code. In order to reproduce the results below, the same seed should be used. Different packages were downloaded and installed, such as caret and randomForest. These should also be installed in order to reproduce the results below (please see code below for ways and syntax to do so).
+
+##How the model was built
+Our outcome variable is classe, a factor variable with 5 levels. For this data set, "participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in 5 different fashions:
+
+Class A - exactly according to the specification
+Class B - throwing the elbows to the front
+Class C - lifting the dumbbell only halfway
+Class D - lowering the dumbbell only halfway
+Class E - throwing the hips to the front
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes." Two models will be tested using decision tree and random forest algorithms. The model with the highest accuracy will be chosen.
+
+#Cross-validation
+Cross-validation will be performed by subsampling our training data set randomly without replacement into 2 subsamples: subTraining data (60% of the original Training data set) and test data (40%). Our models will be fit on the training data set, and tested on the test data. Once the most accurate model is choosen, it will be validated on the validation data set.
+
+#Expected out-of-sample error
+The expected out-of-sample error will correspond to the quantity: 1-accuracy in the cross-validation data. Accuracy is the proportion of correct classified observation over the total sample in the subTesting data set. Expected accuracy is the expected accuracy in the out-of-sample data set (i.e. original testing data set). Thus, the expected value of the out-of-sample error will correspond to the expected number of missclassified observations/total observations in the Test data set, which is the quantity: 1-accuracy found from the cross-validation data set.
+
+Our outcome variable "classe" is an unordered factor variable. Thus, we can choose our error type as 1-accuracy. We have a large sample size with N= 19622 in the Training data set. This allow us to divide our Training set into a training and testing set to allow cross-validation. Features with all missing values will be discarded as well as features that are irrelevant. All other features will be kept as relevant variables. Decision tree and random forest algorithms are known for their ability of detecting the features that are important for classification.
+
+
+Load libraries
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(caret)
+library(corrgram)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+```
+
+reproduce!
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+set.seed(1234)
+```
+
+Load Data
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+validation<- read.csv("C:/Users/jgpolanc/Desktop/Coursera/C9/Human_Activity_Recognition/data/pml-testing.csv",na.strings=c("NA","#DIV/0!",""))
+train<- read.csv("C:/Users/jgpolanc/Desktop/Coursera/C9/Human_Activity_Recognition/data/pml-training.csv",na.strings=c("NA","#DIV/0!",""))
+```
+
+reorder columns and prep data
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+train<- train[ ,c(160,1:159)]
+validation<- validation[ ,c(160,1:159)]
+train[, c(9:160)] <- sapply(train[, c(9:160)], as.numeric)
+validation[, c(9:160)] <- sapply(validation[, c(9:160)], as.numeric)
+```
+
+data partitioning for training
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+train_1 <- createDataPartition(y=train$classe, p=0.6, list=FALSE)
+train_dat  <- train[train_1, ];test_dat<- train[-train_1, ]
+dim(train_dat);dim(test_dat)
+```
+
+data cleaning, remove zero variability 
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+train_subset1<-train_dat[,c(1:8)]
+train_subset<-train_dat[,c(9:130)]
+NZVdat <- nearZeroVar(train_subset, saveMetrics=TRUE)
+NZVdat[NZVdat[,"zeroVar"] + NZVdat[,"nzv"] > 0, ]
+nzv <- nearZeroVar(train_subset)
+train_subset <- train_subset[,-nzv]
+filtered_train<-cbind(train_subset1,train_subset)
+dim(train_dat); dim(filtered_train)
+```
+
+identify correlated (numeric predictors)
+split filtered train into classe+non-numerics vs numerics and run the code chunk below, then run the high corr chunk and cbind them back together
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+descrCor <-  cor(train_subset,use="complete.obs")
+summary(descrCor[upper.tri(descrCor)])
+highlyCorDescr <- findCorrelation(descrCor, cutoff = .75)
+filteredDescr <- train_subset[,-highlyCorDescr]
+descrCor2 <- cor(filteredDescr,use="complete.obs")
+summary(descrCor2[upper.tri(descrCor2)])
+highlyCorDescr = sort(highlyCorDescr)
+reduced_Data = train_subset[,-c(highlyCorDescr)]
+```
+
+Check to see if there are any linear combinations of data present
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+reduced_Data2<- reduced_Data[complete.cases(reduced_Data),]
+comboInfo <- findLinearCombos(reduced_Data2)
+comboInfo
+```
+
+There are no linear combinations present
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+final_train<-cbind(train_subset1,reduced_Data)
+```
+
+Removing X variable so that it does not interfer with ML Algorithms
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+final_train <- final_train[c(-2)]
+```
+
+Remove Variables with too many NAs. Removing variables with a  60% threshold of NA's
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+trainingV1 <- final_train #creating another subset to iterate in loop
+for(i in 1:length(final_train)) { #for every column in the training dataset
+  if( sum( is.na( final_train[, i] ) ) /nrow(final_train) >= .6 ) { #if n?? NAs > 60% of total observations
+    for(j in 1:length(trainingV1)) {
+      if( length( grep(names(final_train[i]), names(trainingV1)[j]) ) ==1)  { #if the columns are the same:
+        trainingV1 <- trainingV1[ , -j] #Remove that column
+      }   
+    } 
+  }
+}
+```
+To check the new N?? of observations
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+dim(trainingV1)
+```
+Setting back:
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+final_train <- trainingV1
+rm(trainingV1)
+```
+Perform the exact same  transformations for testing(test_dat) and valiation(validation) data sets.
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+clean1 <- colnames(final_train)
+clean2 <- colnames(final_train[, -1]) #already with classe column removed
+test_dat <- test_dat[clean1]
+validation <- validation[clean2]
+```
+
+To check the new N?? of observations
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+dim(test_dat)
+```
+To check the new N?? of observations
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+dim(validation)
+```
+In order to ensure proper functioning of Decision Trees and especially RandomForest Algorithm with the Test data set (data set provided), we need to coerce the data into the same type.
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+for (i in 1:length(test_dat) ) {
+  for(j in 1:length(final_train)) {
+    if( length( grep(names(final_train[i]), names(test_dat)[j]) ) ==1)  {
+      class(test_dat[j]) <- class(final_train[i])
+    }      
+  }      
+}
+```
+In order to ensure proper functioning of Decision Trees and especially RandomForest Algorithm with the Test data set (data set provided), we need to coerce the data into the same type.
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+for (i in 1:length(validation) ) {
+  for(j in 1:length(final_train)) {
+    if( length( grep(names(final_train[i]), names(validation)[j]) ) ==1)  {
+      class(validation[j]) <- class(final_train[i])
+    }      
+  }      
+}
+```
+Double Check it worked
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+validation <- rbind(final_train[1, -1] , validation) #note row 2 does not mean anything, this will be removed right.. now:
+validation <- validation[-1,]
+```
+
+#Using ML algorithms for prediction: Decision Tree
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+Fit1 <- rpart(classe ~ ., data=final_train, method="class")
+```
+To view the decision tree with fancy :
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+fancyRpartPlot(Fit1)
+```
+
+Predicting:
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+predict1 <- predict(Fit1, test_dat, type = "class")
+```
+Using confusion Matrix to test results:
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+confusionMatrix(predict1, test_dat$classe)
+```
+
+#Using ML algorithms for prediction: Random Forests
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+Fit2 <- randomForest(classe ~. , data=final_train)
+```
+  ##Predicting in-sample error:
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}    
+  predict2 <- predict(Fit2, test_dat, type = "class")
+```
+Using confusion Matrix to test results:
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+confusionMatrix(predict2, test_dat$classe)
+```    
+#Generating Output for quiz submission
+For Random Forests we use the following formula, which yielded a much better prediction in in-sample:
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+predict3 <- predict(Fit2, validation, type = "class")
+```
